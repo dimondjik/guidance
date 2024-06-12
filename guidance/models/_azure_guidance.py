@@ -21,7 +21,11 @@ class AzureGuidanceEngine(Engine):
         elif not isinstance(server_url, str):
             raise ValueError("server_url must contain a URL string.")
 
-        if not server_url.startswith("https://"):
+        if (
+            not server_url.startswith("https://")
+            and not server_url.startswith("http://localhost:")
+            and not server_url.startswith("http://127.0.0.1:")
+        ):
             raise ValueError(
                 "AzureGuidance requires a remote model URL that starts with https://"
             )
@@ -38,11 +42,13 @@ class AzureGuidanceEngine(Engine):
         super().__init__(tokenizer=tokenizer, compute_log_probs=False)
 
     def __call__(self, parser, grammar, ensure_bos_token=True):
-        b64 = base64.b64encode(grammar.serialize()).decode("utf-8")
-
+        serialized = {"grammar": grammar.ag2_serialize()}
+        # this is a hack to avoid loops
+        serialized["grammar"]["max_tokens"] = self.max_streaming_tokens
+        # print(json.dumps(serialized))
         data = {
-            "controller": "guidance",
-            "controller_arg": {"guidance_b64": b64},
+            "controller": "ag2",
+            "controller_arg": serialized,
             "prompt": parser,
             "max_tokens": self.max_streaming_tokens,
             "temperature": 0.0, # this is just default temperature
@@ -87,8 +93,19 @@ class AzureGuidanceEngine(Engine):
                             j = json.loads(ln[10:])
                             tag = j.get("object", "")
                             if tag == "capture":
-                                capture_groups[j["name"]] = bytes.fromhex(j["hex"])
-                                capture_group_log_probs[j["name"]] = j["log_prob"]
+                                cname: str = j["name"]
+                                data = bytes.fromhex(j["hex"])
+                                if cname.startswith("__LIST_APPEND:"):
+                                    cname = cname[14:]
+                                    if cname not in capture_groups or \
+                                        not isinstance(capture_groups[cname], list):
+                                        capture_groups[cname] = []
+                                        capture_group_log_probs[cname] = []
+                                    capture_groups[cname].append(data)
+                                    capture_group_log_probs[cname].append(j["log_prob"])
+                                else:
+                                    capture_groups[cname] = data
+                                    capture_group_log_probs[cname] = j["log_prob"]
                             elif tag == "text":
                                 # it actually should only happen once per round...
                                 new_bytes += bytes.fromhex(j["hex"])
@@ -98,7 +115,7 @@ class AzureGuidanceEngine(Engine):
                     if num_text_entries > 0:
                         new_bytes_prob /= num_text_entries
 
-                    # print(ch["logs"].rstrip("\n"), flush=True)
+                    print(ch["logs"].rstrip("\n"), flush=True)
 
                     err = ch.get("error", "")
                     if err:
