@@ -1,55 +1,48 @@
-from typing import Any
-
 import pytest
+import json
 
 from guidance import ebnf
-from guidance._grammar import Join, Select
 
 
-class TestIntegerArithmetic:
-    start = "expr"
-    grammar_def = """
-    expr    : expr "+" term     -> add
-            | expr "-" term     -> sub
-            | term
+@pytest.fixture(scope="module")
+def azure_guidance_model(selected_model, selected_model_name):
+    if selected_model_name in ["azure_guidance"]:
+        return selected_model
+    else:
+        pytest.skip("Requires Azure Guidance model")
 
-    term    : term "*" factor   -> mul
-            | term "/" factor   -> div
-            | factor
 
-    factor  : integer
-            | "(" expr ")"
+class TestJson:
+    grammar_def = r"""
+    value: dict
+         | list
+         | ESCAPED_STRING
+         | SIGNED_NUMBER
+         | "true" | "false" | "null"
 
-    integer : DIGIT+
-            | "-" integer       -> neg
+    list : "[" [value ("," value)*] "]"
 
-    %import common.DIGIT
+    dict : "{" [pair ("," pair)*] "}"
+    pair : ESCAPED_STRING ":" value
+
+    // Can't import common.ESCAPED_STRING because it uses a lookaround
+    ESCAPED_STRING: /"(\\(["\\\/bfnrt]|u[a-fA-F0-9]{4})|[^"\\\x00-\x1F\x7F]+)*"/
+
+    %import common.SIGNED_NUMBER
+    %import common.WS
+    %ignore WS
+
     """
-    grammar = ebnf(grammar=grammar_def, start=start)
+    def test_dict(self, azure_guidance_model):
+        capture_name = "json"
+        grammar = ebnf(name=capture_name, grammar=self.grammar_def, start="dict")
+        m = azure_guidance_model + "Here's a simple json object: " + grammar
+        o = json.loads(m['json'])
+        assert isinstance(o, dict)
 
-    def test_no_redundant_nonterminals(self):
-        # Accumulate a set of all nonterminal nodes in the grammar
-        seen = set()
-
-        def accumulate(g: Any):
-            if g in seen or not isinstance(g, (Join, Select)):
-                return
-            seen.add(g)
-            for v in g.values:
-                accumulate(v)
-
-        accumulate(self.grammar)
-
-        # Magic number 14 is minimal number of nodes (derived "by inspection")
-        assert len(seen) == 14
-        assert len({s.name for s in seen}) == 14
-
-    @pytest.mark.parametrize(
-        "matchstr", ["1+2+3+4", "1/2+3/4", "(1+2/3)*(4+(5+3/2))", "8/-4", "-9", "42"]
-    )
-    def test_good(self, matchstr):
-        assert self.grammar.match(matchstr) is not None
-
-    @pytest.mark.parametrize("matchstr", ["2+3+4(5)", "7(+8)", "8/*6"])
-    def test_bad(self, matchstr):
-        assert self.grammar.match(matchstr) is None
+    def test_array(self, azure_guidance_model):
+        capture_name = "json"
+        grammar = ebnf(name=capture_name, grammar=self.grammar_def, start="list")
+        m = azure_guidance_model + "Here's a simple json object: " + grammar
+        o = json.loads(m['json'])
+        assert isinstance(o, list)

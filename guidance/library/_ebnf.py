@@ -5,18 +5,19 @@ from lark import Lark
 from lark.grammar import NonTerminal, Rule, Terminal
 
 from .._grammar import GrammarFunction, Join
+from ._greedy import greedy_grammar, lexeme
 from .._guidance import guidance
 from . import capture, regex, select
 
 
 class EBNF:
-    def __init__(self, grammar: str, start: str):
-        self.start = start
-        self.parser = Lark(grammar, start=start)  # kwds?
+    def __init__(self, parser: Lark):
+        self.parser = parser # kwds?
 
-        # grammars for nonterminals -- regex seems to be the simplest solution
+        # grammars for nonterminals -- for now just try to use lexemes as terminals
+        # but we may have to break terminals down further in the future
         self.terminal_grammars: dict[Terminal, GrammarFunction] = {
-            Terminal(terminal.name): regex(pattern=terminal.pattern.to_regexp())
+            Terminal(terminal.name): lexeme(terminal.pattern.to_regexp())
             for terminal in self.parser.terminals
         }
 
@@ -71,11 +72,19 @@ class EBNF:
         inner.__name__ = nonterminal.name
         return guidance(inner, stateless=True, dedent=False, cache=True)
 
-    def build(self) -> GrammarFunction:
+    def build(self, start) -> GrammarFunction:
         # Trigger recursive build of grammar using start nonterminal
-        return self.build_term(NonTerminal(self.start))
+        return self.build_term(NonTerminal(start))
 
 
 @guidance(stateless=True)
 def ebnf(lm, name=None, *, grammar: str, start: str):
-    return lm + capture(EBNF(grammar, start).build(), name=name)
+    parser = Lark(grammar, start=start)
+    ignored_tokens = parser.ignore_tokens
+    ignored_regexes = [parser.get_terminal(token).pattern.to_regexp() for token in ignored_tokens]
+    skip_regex = "|".join(ignored_regexes)
+    return lm + greedy_grammar(
+        name=name,
+        body=EBNF(parser).build(start),
+        skip_regex=skip_regex,
+    )
